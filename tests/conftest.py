@@ -9,6 +9,8 @@ always use the stand-in.
 import io
 import os
 import re
+from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import anthropic
@@ -125,27 +127,51 @@ def scanned_chart_pdf() -> bytes:
 
 
 LIVE = os.environ.get("SONGSCAN_LIVE_API") == "1"
+# How long a test may take with Claude itself: reading sheet music, with two
+# calls and a long answer, can take minutes (the stand-in's, under a second)
+LIVE_TIMEOUT = 600
+
+
+def pytest_collection_modifyitems(items):
+    """With SONGSCAN_LIVE_API=1, more time for the tests that ask Claude."""
+    if LIVE:
+        for item in items:
+            if "vision" in getattr(item, "fixturenames", ()):
+                item.add_marker(pytest.mark.timeout(LIVE_TIMEOUT))
 
 
 @pytest.fixture
 def vision():
-    """A client to read PDFs with vision: `vision(song)` gives Claude itself
-    with SONGSCAN_LIVE_API=1, else a stand-in answering with *song* (what
-    Claude would make of the test's PDF). Tests using it check only what
-    either would give."""
+    """A client to read PDFs with vision: `vision(song, scores)` gives Claude
+    itself with SONGSCAN_LIVE_API=1, else a stand-in answering with *song*
+    (what Claude would make of the test's PDF) and, for sheet music, *scores*
+    (the MusicXML it would write). Tests using it check only what either
+    would give."""
 
-    def client(song):
-        return anthropic.Anthropic() if LIVE else fake_client(song)[0]
+    def client(song, scores=()):
+        return anthropic.Anthropic() if LIVE else fake_client(song, scores=scores)[0]
 
     return client
 
 
 class FakeMessages:
-    """Claude's messages, answering with *song* (a vision._Song)."""
+    """Claude's messages, answering with *song* (a vision._Song), and then,
+    asked to write sheet music out, with each of *scores* in turn (MusicXML,
+    or anything else it might write)."""
 
-    def __init__(self, song=None, stop_reason="end_turn", error: Exception | None = None):
+    def __init__(
+        self,
+        song=None,
+        stop_reason="end_turn",
+        error: Exception | None = None,
+        scores: list[str] = (),
+        score_stop_reason="end_turn",
+        score_error: Exception | None = None,
+    ):
         self.song, self.stop_reason, self.error = song, stop_reason, error
+        self.scores, self.score_stop_reason, self.score_error = list(scores), score_stop_reason, score_error
         self.calls: list[dict] = []
+        self.streams: list[dict] = []
 
     def parse(self, **kwargs):
         self.calls.append(kwargs)
@@ -153,7 +179,21 @@ class FakeMessages:
             raise self.error
         return SimpleNamespace(stop_reason=self.stop_reason, parsed_output=self.song)
 
+    @contextmanager
+    def stream(self, **kwargs):
+        self.streams.append(kwargs)
+        if self.score_error:
+            raise self.score_error
+        text = self.scores.pop(0) if self.scores else ""
+        block = SimpleNamespace(type="text", text=text, model_dump=lambda **_: {"type": "text", "text": text})
+        message = SimpleNamespace(stop_reason=self.score_stop_reason, content=[block])
+        yield SimpleNamespace(get_final_message=lambda: message)
+
 
 def fake_client(song=None, **kwargs):
     messages = FakeMessages(song, **kwargs)
     return SimpleNamespace(beta=SimpleNamespace(messages=messages)), messages
+
+
+# A lead sheet: "Amazing Grace", in G, 3/4, with chords and one verse's lyrics
+LEAD_SHEET = (Path(__file__).parent / "fixtures" / "lead-sheet.musicxml").read_text()

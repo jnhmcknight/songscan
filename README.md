@@ -1,8 +1,9 @@
 # songscan
 
 Read songs out of PDFs. A chord chart becomes [ChordPro](https://www.chordpro.org/), with the
-song's details (title, artists, key, tempo, time, capo, copyright) alongside; sheet music will
-become MusicXML.
+song's details (title, artists, key, tempo, time, capo, copyright) alongside; sheet music becomes
+MusicXML, which songscan can move to another key and draw (and a lead sheet, with chords and
+lyrics, a ChordPro chart too).
 
 A PDF's own text is read first: charts typed up in a word processor or chart app keep their words
 and where each sits on the page, so their chords can be put back over the syllables they are
@@ -13,6 +14,13 @@ plainly a chord chart) is read by Claude, looking at its pages.
 
 ```bash
 uv add "songscan @ git+https://github.com/jnhmcknight/songscan.git"
+```
+
+Reading sheet music needs the `score` extra ([music21](https://www.music21.org/),
+[verovio](https://www.verovio.org/) and [svglib](https://github.com/deeplook/svglib)):
+
+```bash
+uv add "songscan[score] @ git+https://github.com/jnhmcknight/songscan.git"
 ```
 
 Reading scans needs an [Anthropic API key](https://platform.claude.com/), in `ANTHROPIC_API_KEY`
@@ -29,10 +37,21 @@ except ScanError as error:
     ...  # error.retryable: whether trying again later may work
 
 result.kind       # "chord_chart", "score" or "other"
-result.chordpro   # a chord chart's ChordPro, details and all; else None
+result.chordpro   # a chord chart's ChordPro, details and all (a lead sheet's too); else None
+result.musicxml   # sheet music's MusicXML; else None
 result.meta       # ScanMeta: title, artists, key, tempo, time, capo, copyright
 result.source     # "text" (the PDF's own) or "vision" (Claude's reading)
 result.warnings   # anything to check, or that couldn't be done
+```
+
+Sheet music, in another key (by the nearer way up or down, spelled as the key is):
+
+```python
+from songscan import score
+
+score.transpose(result.musicxml, "Bb")              # MusicXML
+score.render(result.musicxml, "Bb")                 # a page of SVG each
+score.render(result.musicxml, "Bb", format="pdf")   # a PDF
 ```
 
 To choose the client or model:
