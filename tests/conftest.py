@@ -127,6 +127,17 @@ def scanned_chart_pdf() -> bytes:
 
 
 LIVE = os.environ.get("SONGSCAN_LIVE_API") == "1"
+# How long a test may take with Claude itself: reading sheet music, with two
+# calls and a long answer, can take minutes (the stand-in's, under a second)
+LIVE_TIMEOUT = 600
+
+
+def pytest_collection_modifyitems(items):
+    """With SONGSCAN_LIVE_API=1, more time for the tests that ask Claude."""
+    if LIVE:
+        for item in items:
+            if "vision" in getattr(item, "fixturenames", ()):
+                item.add_marker(pytest.mark.timeout(LIVE_TIMEOUT))
 
 
 @pytest.fixture
