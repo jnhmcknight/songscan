@@ -38,26 +38,33 @@ class TestFromText:
         assert "[G]Amazing grace [C]how sweet the [G]sound" in result.chordpro
         assert result.meta.key == "G"
 
-    def test_lyrics_alone_go_to_claude(self):
-        client, messages = fake_client(_song(kind="other", chordpro=None))
-        result = scan_pdf(
-            make_pdf(["Amazing Grace", "", "Amazing grace how sweet the sound"] * 3), client=client
-        )
-        assert len(messages.calls) == 1
+    def test_lyrics_alone_go_to_claude(self, vision):
+        lyrics = ["Amazing Grace", "", "Amazing grace how sweet the sound", "That saved a wretch like me"]
+        client = vision(_song(kind="other", chordpro=None))
+        result = scan_pdf(make_pdf(lyrics), client=client)
         assert (result.kind, result.source, result.chordpro) == ("other", "vision", None)
 
 
 class TestWithVision:
-    def test_scan(self, image_pdf):
+    def test_scan(self, vision, scanned_chart_pdf):
+        result = scan_pdf(scanned_chart_pdf, client=vision(_song()))
+        assert (result.kind, result.source, result.pages) == ("chord_chart", "vision", 1)
+        assert (result.meta.title, result.meta.key) == ("Amazing Grace", "G")
+        assert result.meta.artists == ["John Newton"]
+        assert result.meta.time == "3/4"
+        assert any("Public Domain" in line for line in result.meta.copyright)
+        assert result.chordpro.startswith("{title: Amazing Grace}\n{artist: John Newton}\n{key: G}\n")
+        assert "{start_of_verse: Verse 1}\n[G]Amazing" in result.chordpro
+        assert "[C]grace" in result.chordpro or "[C]how" in result.chordpro
+
+    def test_details_go_in_the_directives(self, image_pdf):
         client, _ = fake_client(_song())
         result = scan_pdf(image_pdf, client=client)
-        assert (result.kind, result.source, result.pages) == ("chord_chart", "vision", 1)
         assert result.chordpro == (
             "{title: Amazing Grace}\n{artist: John Newton}\n{key: G}\n{time: 3/4}\n"
             "{copyright: Public Domain}\n\n"
             "{start_of_verse: Verse 1}\n[G]Amazing [C]grace\n{end_of_verse}"
         )
-        assert result.meta.artists == ["John Newton"]
 
     def test_request(self, image_pdf):
         client, messages = fake_client(_song())

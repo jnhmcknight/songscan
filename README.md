@@ -50,3 +50,12 @@ uv sync
 uv run pytest
 uv run ruff check && uv run black --check . && uv run pyright
 ```
+
+Tests that read PDFs with vision use a stand-in for Claude. To run them against the real API
+instead (which costs a little), set `SONGSCAN_LIVE_API=1` with a key in `ANTHROPIC_API_KEY`:
+
+```bash
+SONGSCAN_LIVE_API=1 uv run pytest
+```
+
+Tests of how songscan handles the API's answers and errors use the stand-in either way.

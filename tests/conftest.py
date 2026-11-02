@@ -1,11 +1,21 @@
-"""PDFs to scan, made as the tests run, and a stand-in for Claude."""
+"""PDFs to scan, made as the tests run, and a stand-in for Claude.
+
+Tests that read PDFs with vision ask Claude itself when SONGSCAN_LIVE_API=1
+(with an API key in ANTHROPIC_API_KEY), and a stand-in otherwise: see the
+`vision` fixture. Tests of how songscan handles the API's answers and errors
+always use the stand-in.
+"""
 
 import io
+import os
 import re
 from types import SimpleNamespace
 
+import anthropic
 import pytest
+from PIL import Image, ImageDraw, ImageFont
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 from chordpro.chordsheet import chord_line
@@ -73,6 +83,32 @@ def make_image_pdf() -> bytes:
     return buf.getvalue()
 
 
+def make_scanned_pdf(lines: list[str]) -> bytes:
+    """A PDF of a picture of *lines*, laid out as `make_pdf` lays them out
+    but with no text of its own: as a scanner makes of a printed chart."""
+    image = Image.new("L", (1700, 2200), 255)
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=36)
+    y = 150
+    for index, line in enumerate(lines):
+        below = lines[index + 1] if index + 1 < len(lines) else ""
+        if chord_line(line) is not None:
+            for start, word in _words(line):
+                if below.strip() and chord_line(below) is None:
+                    x = draw.textlength(below[:start], font=font)
+                else:
+                    x = start * draw.textlength("n", font=font)
+                draw.text((150 + x, y), word, font=font, fill=0)
+        else:
+            draw.text((150, y), line, font=font, fill=0)
+        y += 50
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=letter)
+    pdf.drawImage(ImageReader(image), 0, 0, *letter)
+    pdf.save()
+    return buf.getvalue()
+
+
 @pytest.fixture
 def chart_pdf() -> bytes:
     return make_pdf(CHART)
@@ -81,6 +117,27 @@ def chart_pdf() -> bytes:
 @pytest.fixture
 def image_pdf() -> bytes:
     return make_image_pdf()
+
+
+@pytest.fixture
+def scanned_chart_pdf() -> bytes:
+    return make_scanned_pdf(CHART)
+
+
+LIVE = os.environ.get("SONGSCAN_LIVE_API") == "1"
+
+
+@pytest.fixture
+def vision():
+    """A client to read PDFs with vision: `vision(song)` gives Claude itself
+    with SONGSCAN_LIVE_API=1, else a stand-in answering with *song* (what
+    Claude would make of the test's PDF). Tests using it check only what
+    either would give."""
+
+    def client(song):
+        return anthropic.Anthropic() if LIVE else fake_client(song)[0]
+
+    return client
 
 
 class FakeMessages:
