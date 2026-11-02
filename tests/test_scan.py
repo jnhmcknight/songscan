@@ -6,7 +6,8 @@ import pytest
 import anthropic
 from songscan import DEFAULT_MODEL, ScanError, scan_pdf
 from songscan.vision import _Song
-from tests.conftest import fake_client, make_pdf
+from songscan import score
+from tests.conftest import LEAD_SHEET, fake_client, make_pdf
 
 
 def _song(**fields) -> _Song:
@@ -121,3 +122,65 @@ class TestWithVision:
         with pytest.raises(ScanError) as raised:
             scan_pdf(image_pdf, client=client)
         assert raised.value.retryable is retryable
+
+
+class TestSheetMusic:
+    """Sheet music: written out as MusicXML, by Claude (or its stand-in)."""
+
+    def test_sheet_music(self, vision):
+        pdf = score.render(LEAD_SHEET, format="pdf")
+        client = vision(_song(kind="score", key=None, time=None, chordpro=None), scores=[LEAD_SHEET])
+        result = scan_pdf(pdf, client=client)
+        assert (result.kind, result.source) == ("score", "vision")
+        assert result.musicxml is not None and "<score-partwise" in result.musicxml
+        assert result.meta.key == "G"
+        assert result.meta.time == "3/4"
+        # A lead sheet's chart, from the MusicXML
+        assert result.chordpro is not None and "[G]" in result.chordpro
+        assert "{start_of_verse" in result.chordpro
+
+    def test_request(self, image_pdf):
+        client, messages = fake_client(_song(kind="score", chordpro=None), scores=[LEAD_SHEET])
+        scan_pdf(image_pdf, client=client)
+        (call,) = messages.streams
+        assert call["max_tokens"] == 128000
+        assert call["fallbacks"] == "default"
+        assert call["output_config"] == {"effort": "high"}
+        assert call["messages"][0]["content"][0]["type"] == "document"
+
+    def test_details_from_the_pdf_come_first(self, image_pdf):
+        client, _ = fake_client(_song(kind="score", title="Grace (live)", key="A", chordpro=None), scores=[LEAD_SHEET])
+        result = scan_pdf(image_pdf, client=client)
+        assert (result.meta.title, result.meta.key, result.meta.tempo) == ("Grace (live)", "A", "72")
+
+    def test_written_again_when_unreadable(self, image_pdf):
+        wrapped = f"Here it is:\n```xml\n{LEAD_SHEET}\n```"
+        client, messages = fake_client(_song(kind="score", chordpro=None), scores=["<score-partwise>oops", wrapped])
+        result = scan_pdf(image_pdf, client=client)
+        assert result.musicxml is not None
+        assert len(messages.streams) == 2
+        retry = messages.streams[1]["messages"]
+        assert [m["role"] for m in retry] == ["user", "assistant", "user"]
+        assert "couldn't be read" in retry[2]["content"]
+
+    def test_unreadable_twice(self, image_pdf):
+        client, _ = fake_client(_song(kind="score", chordpro=None), scores=["nope", "still nope"])
+        result = scan_pdf(image_pdf, client=client)
+        assert (result.kind, result.musicxml, result.chordpro) == ("score", None, None)
+        assert "couldn't be read" in result.warnings[0]
+
+    @pytest.mark.parametrize("stop_reason", ["refusal", "max_tokens"])
+    def test_stopped(self, image_pdf, stop_reason):
+        client, _ = fake_client(
+            _song(kind="score", chordpro=None), scores=[LEAD_SHEET], score_stop_reason=stop_reason
+        )
+        result = scan_pdf(image_pdf, client=client)
+        assert result.musicxml is None
+        assert result.warnings
+
+    def test_busy(self, image_pdf):
+        error = _status_error(anthropic.RateLimitError, 429)
+        client, _ = fake_client(_song(kind="score", chordpro=None), score_error=error)
+        with pytest.raises(ScanError) as raised:
+            scan_pdf(image_pdf, client=client)
+        assert raised.value.retryable

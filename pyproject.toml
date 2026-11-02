@@ -20,6 +20,13 @@ Homepage = "https://github.com/jnhmcknight/songscan"
 Repository = "https://github.com/jnhmcknight/songscan"
 Issues = "https://github.com/jnhmcknight/songscan/issues"
 
+[project.optional-dependencies]
+score = [
+    "music21>=10.5.2",
+    "svglib>=2.3.2",
+    "verovio>=6.4.0",
+]
+
 [tool.uv.sources]
 chordpro-renderer = { git = "https://github.com/jnhmcknight/chordpro.git", rev = "main" }
 
@@ -33,6 +40,8 @@ dev = [
     "pytest-timeout>=2.4.0",
     "reportlab>=4.0",
     "ruff",
+    # The tests read sheet music too
+    "songscan[score]",
 ]
 
 [tool.pytest.ini_options]
@@ -62,6 +71,8 @@ ignore = ["C408", "PERF401"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["PLC0415"]
+# The sheet music module (music21) is imported only when sheet music is read
+"songscan/vision.py" = ["PLC0415"]
 
 [tool.pyright]
 include = ["songscan"]

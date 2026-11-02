@@ -4,6 +4,7 @@ text isn't plainly a chord chart.
 """
 
 import base64
+import re
 from typing import Literal
 
 import anthropic
@@ -44,6 +45,24 @@ Fill in the song's details only from what the PDF shows, and null (or an empty l
 it doesn't: the title, the artists or writers, the key (like "G", "B♭" or "F♯m"), the tempo in beats \
 per minute (digits only), the time signature (like "4/4"), the capo fret (digits only), and the \
 copyright lines, one per line, including any CCLI song number.
+"""
+
+
+SCORE_SYSTEM = """\
+You transcribe sheet music into MusicXML 4.0 (score-partwise), for a church worship team's song \
+library. Musicians will play from what you write, and it will be moved into other keys, so write \
+exactly what the page shows:
+
+- Every part and staff, with its clef, key signature and time signature, and their changes.
+- Every note and rest, with its pitch and accidentals as written, duration, ties, dots, tuplets \
+and voices; measures numbered as the page numbers them, pickup measures included.
+- Chord symbols as <harmony> elements, on the beat they are written over.
+- Lyrics under their notes, with <syllabic> marking words split across notes, and each verse as \
+its own lyric number.
+- Repeats, endings, D.C./D.S./coda marks, tempo marks and dynamics as written.
+- The title, composers and lyricists in <work>/<identification>, and any copyright in <rights>.
+
+Write the MusicXML only, from <?xml to </score-partwise>, without comments or explanation.
 """
 
 
@@ -114,5 +133,100 @@ def read_with_vision(data: bytes, pages: int, client: anthropic.Anthropic, model
     elif song.kind == "chord_chart":
         result.warnings.append("No chords or lyrics could be read from this chart.")
     elif song.kind == "score":
-        result.warnings.append("Sheet music isn't read into MusicXML yet.")
+        _read_score(result, document, client, model)
     return result
+
+
+def _read_score(
+    result: ScanResult, document: BetaRequestDocumentBlockParam, client: anthropic.Anthropic, model: str
+) -> None:
+    """Fill in *result*, sheet music, with its MusicXML (and, from that, the
+    details the PDF left out, and a lead sheet's chord chart); or a warning
+    saying why it couldn't be."""
+    try:
+        from . import score  # music21 and verovio: the "score" extra
+    except ImportError:
+        result.warnings.append('Reading sheet music needs songscan\'s "score" extra.')
+        return
+    try:
+        musicxml = read_musicxml(document, client, model)
+    except ScanError as error:
+        if error.retryable:
+            raise
+        result.warnings.append(f"The sheet music couldn't be read: {error}")
+        return
+
+    parsed = score.load(musicxml)
+    result.musicxml = musicxml
+    found = score.score_meta(parsed)
+    meta = result.meta
+    for name in ("title", "key", "tempo", "time"):
+        if not getattr(meta, name):
+            setattr(meta, name, getattr(found, name))
+    meta.artists = meta.artists or found.artists
+    meta.copyright = meta.copyright or found.copyright
+    if chart := score.score_chordpro(parsed):
+        result.chordpro = "\n".join([*meta.directives(), "", chart])
+
+
+def read_musicxml(document: BetaRequestDocumentBlockParam, client: anthropic.Anthropic, model: str) -> str:
+    """The MusicXML of the sheet music in *document* (a PDF of it), tidied
+    up. Claude writes it again, once, if what it wrote can't be read."""
+    from . import score
+
+    messages: list[BetaMessageParam] = [
+        {"role": "user", "content": [document, {"type": "text", "text": "Transcribe this sheet music."}]}
+    ]
+    for attempt in range(2):
+        response = _stream(messages, client, model)
+        text = "".join(block.text for block in response.content if block.type == "text")
+        found = _MUSICXML_RE.search(text)
+        try:
+            if found is None:
+                raise ScanError("No MusicXML came back.")
+            return score.clean(found.group(0))
+        except ScanError as error:
+            if attempt:
+                raise
+            messages += [
+                {
+                    "role": "assistant",
+                    "content": [block.model_dump(exclude_none=True) for block in response.content],
+                },
+                {
+                    "role": "user",
+                    "content": f"That MusicXML couldn't be read ({error}). Write the whole score again, "
+                    "as complete, valid MusicXML.",
+                },
+            ]
+    raise AssertionError("unreachable")
+
+
+_MUSICXML_RE = re.compile(
+    r"(<\?xml[^>]*>\s*)?(<!DOCTYPE[^>]*>\s*)?<score-partwise\b.*?</score-partwise>", re.DOTALL
+)
+
+
+def _stream(messages: list[BetaMessageParam], client: anthropic.Anthropic, model: str):
+    """Claude's answer, streamed: a score can take tens of thousands of
+    tokens, more than a request may wait for."""
+    try:
+        with client.beta.messages.stream(
+            model=model,
+            max_tokens=128000,
+            system=SCORE_SYSTEM,
+            messages=messages,
+            output_config={"effort": "high"},
+            fallbacks="default",
+            betas=[_FALLBACK_BETA],
+        ) as stream:
+            response = stream.get_final_message()
+    except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError) as error:
+        raise ScanError(f"The sheet music couldn't be read just now: {error}", retryable=True) from error
+    except anthropic.APIStatusError as error:
+        raise ScanError(error.message) from error
+    if response.stop_reason == "refusal":
+        raise ScanError("reading it was declined.")
+    if response.stop_reason == "max_tokens":
+        raise ScanError("it is too long.")
+    return response
