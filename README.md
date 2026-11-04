@@ -54,6 +54,17 @@ score.render(result.musicxml, "Bb")                 # a page of SVG each
 score.render(result.musicxml, "Bb", format="pdf")   # a PDF
 ```
 
+Drawing uses the fonts verovio comes with. To use others (or to find them
+elsewhere), set `SONGSCAN_VEROVIO_RESOURCES` to their directory, or say where
+they are each time:
+
+```python
+score.render(result.musicxml, "Bb", resources="/path/to/verovio/data")
+```
+
+They are given to each drawing, so it works on any thread: verovio itself
+only knows where its fonts are on the thread that imported it.
+
 To choose the client or model:
 
 ```python

@@ -6,7 +6,9 @@ slow to import, so this is imported only when sheet music is read or drawn.
 """
 
 import io
+import os
 import re
+from importlib.resources import files
 from typing import Literal, overload
 
 import verovio
@@ -43,6 +45,21 @@ _TEXT_ACCIDENTALS = {
 _MUSIC_FONT_TEXT = re.compile(
     r'(<tspan font-size="\d+px">[^<]*)(</tspan>)\s*<tspan font-family="Leipzig" font-size="\d+px">([^<])</tspan>'
 )
+
+# Where verovio's fonts are, when render isn't told: SONGSCAN_VEROVIO_RESOURCES,
+# else those it comes with
+RESOURCE_PATH_ENV = "SONGSCAN_VEROVIO_RESOURCES"
+
+
+def resource_path() -> str:
+    """Where verovio's fonts (its resources) are drawn from by default:
+    $SONGSCAN_VEROVIO_RESOURCES, else those verovio comes with.
+
+    verovio keeps its own default per thread, and sets it only on the thread
+    that imports it: on any other (a web server's request) it looks where its
+    wheel was built, and can't draw. So render always says where they are."""
+    return os.environ.get(RESOURCE_PATH_ENV) or str(files("verovio") / "data")
+
 
 _KEY_RE = re.compile(r"^\s*([A-Ga-g])([#♯b♭]?)(m|min|minor)?\s*$")
 
@@ -219,21 +236,38 @@ def _ascii(name: str) -> str:
 
 
 @overload
-def render(musicxml: str, key: str | None = None, *, format: Literal["svg"] = "svg") -> list[str]: ...
+def render(
+    musicxml: str,
+    key: str | None = None,
+    *,
+    format: Literal["svg"] = "svg",
+    resources: str | None = None,
+) -> list[str]: ...
 @overload
-def render(musicxml: str, key: str | None = None, *, format: Literal["pdf"]) -> bytes: ...
+def render(
+    musicxml: str, key: str | None = None, *, format: Literal["pdf"], resources: str | None = None
+) -> bytes: ...
 
 
 def render(
-    musicxml: str, key: str | None = None, *, format: Literal["svg", "pdf"] = "svg"
+    musicxml: str,
+    key: str | None = None,
+    *,
+    format: Literal["svg", "pdf"] = "svg",
+    resources: str | None = None,
 ) -> list[str] | bytes:
-    """The score drawn, in *key* if given: a page of SVG each, or a PDF."""
+    """The score drawn, in *key* if given: a page of SVG each, or a PDF.
+
+    *resources*: where verovio's fonts are (by default, resource_path())."""
     score = load(musicxml)
     if key:
         score = _transposed(score, key)
     _tempo_as_text(score)
 
-    toolkit = verovio.toolkit()
+    toolkit = verovio.toolkit(False)
+    path = resources or resource_path()
+    if not toolkit.setResourcePath(path):
+        raise ScanError(f"verovio's fonts couldn't be found in {path}.")
     toolkit.setOptions(
         _PAGE | {"header": "none", "footer": "none", "breaks": "auto", "adjustPageHeight": format == "svg"}
     )

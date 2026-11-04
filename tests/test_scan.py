@@ -149,13 +149,17 @@ class TestSheetMusic:
         assert call["messages"][0]["content"][0]["type"] == "document"
 
     def test_details_from_the_pdf_come_first(self, image_pdf):
-        client, _ = fake_client(_song(kind="score", title="Grace (live)", key="A", chordpro=None), scores=[LEAD_SHEET])
+        client, _ = fake_client(
+            _song(kind="score", title="Grace (live)", key="A", chordpro=None), scores=[LEAD_SHEET]
+        )
         result = scan_pdf(image_pdf, client=client)
         assert (result.meta.title, result.meta.key, result.meta.tempo) == ("Grace (live)", "A", "72")
 
     def test_written_again_when_unreadable(self, image_pdf):
         wrapped = f"Here it is:\n```xml\n{LEAD_SHEET}\n```"
-        client, messages = fake_client(_song(kind="score", chordpro=None), scores=["<score-partwise>oops", wrapped])
+        client, messages = fake_client(
+            _song(kind="score", chordpro=None), scores=["<score-partwise>oops", wrapped]
+        )
         result = scan_pdf(image_pdf, client=client)
         assert result.musicxml is not None
         assert len(messages.streams) == 2

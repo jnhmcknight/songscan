@@ -57,7 +57,9 @@ class TestReading:
         assert cleaned.startswith("<?xml")
         assert sc.clean(cleaned) == cleaned
 
-    @pytest.mark.parametrize("musicxml", ["", "<score-partwise", "<html></html>", '<?xml version="1.0"?><score-partwise/>'])
+    @pytest.mark.parametrize(
+        "musicxml", ["", "<score-partwise", "<html></html>", '<?xml version="1.0"?><score-partwise/>']
+    )
     def test_not_musicxml(self, musicxml):
         with pytest.raises(ScanError):
             sc.clean(musicxml)
@@ -99,3 +101,26 @@ class TestRender:
     def test_pdf(self):
         pdf = sc.render(LEAD_SHEET, format="pdf")
         assert pdf.startswith(b"%PDF")
+
+    def test_on_a_thread_of_its_own(self):
+        """verovio only knows where its fonts are on the thread that imported
+        it: render says, wherever it is drawn (a web server's request)."""
+        import threading
+
+        pages = []
+        thread = threading.Thread(target=lambda: pages.extend(sc.render(LEAD_SHEET, "Bb")))
+        thread.start()
+        thread.join(timeout=10)
+        (page,) = pages
+        assert page.startswith("<svg") and ">Bb<" in page
+
+    def test_resources_given(self, tmp_path):
+        with pytest.raises(ScanError, match="fonts couldn't be found"):
+            sc.render(LEAD_SHEET, resources=str(tmp_path / "nowhere"))
+        assert sc.render(LEAD_SHEET, resources=sc.resource_path())[0].startswith("<svg")
+
+    def test_resources_from_the_environment(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(sc.RESOURCE_PATH_ENV, str(tmp_path / "nowhere"))
+        assert sc.resource_path() == str(tmp_path / "nowhere")
+        with pytest.raises(ScanError, match="fonts couldn't be found"):
+            sc.render(LEAD_SHEET)
