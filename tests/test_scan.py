@@ -1,13 +1,14 @@
-"""Scanning: the PDF's own text when it is a chord chart, Claude otherwise."""
+"""Scanning: a PDF's own text when it is a chord chart, Claude otherwise (and
+for images, always)."""
 
 import httpx2
 import pytest
 
 import anthropic
-from songscan import DEFAULT_MODEL, ScanError, scan_pdf
+from songscan import DEFAULT_MODEL, ScanError, scan, scan_image, scan_pdf
 from songscan.vision import _Song
 from songscan import score
-from tests.conftest import LEAD_SHEET, fake_client, make_pdf
+from tests.conftest import CHART, LEAD_SHEET, fake_client, make_image, make_pdf
 
 
 def _song(**fields) -> _Song:
@@ -188,3 +189,56 @@ class TestSheetMusic:
         with pytest.raises(ScanError) as raised:
             scan_pdf(image_pdf, client=client)
         assert raised.value.retryable
+
+
+class TestImages:
+    """Photos and scans of a chart: read by Claude, a page each."""
+
+    def test_scan(self, vision, scanned_chart_image):
+        result = scan_image(scanned_chart_image, client=vision(_song()))
+        assert (result.kind, result.source, result.pages) == ("chord_chart", "vision", 1)
+        assert (result.meta.title, result.meta.key) == ("Amazing Grace", "G")
+        assert "{start_of_verse: Verse 1}\n[G]Amazing" in result.chordpro
+
+    def test_request(self, scanned_chart_image):
+        client, messages = fake_client(_song())
+        scan_image(scanned_chart_image, client=client)
+        image, ask = messages.calls[0]["messages"][0]["content"]
+        assert image["type"] == "image"
+        assert image["source"]["media_type"] == "image/png"
+        assert ask["text"] == "Read the song in these images."
+
+    def test_sheet_music(self):
+        client, messages = fake_client(_song(kind="score", chordpro=None), scores=[LEAD_SHEET])
+        result = scan_image(make_image(CHART, "JPEG"), client=client)
+        assert result.musicxml is not None
+        assert messages.streams[0]["messages"][0]["content"][0]["type"] == "image"
+
+    def test_errors_say_image(self, scanned_chart_image):
+        client, _ = fake_client(_song(), stop_reason="refusal")
+        with pytest.raises(ScanError, match="The image couldn't be read"):
+            scan_image(scanned_chart_image, client=client)
+
+    def test_not_an_image(self):
+        client, messages = fake_client(_song())
+        with pytest.raises(ScanError):
+            scan_image(b"not an image", client=client)
+        assert messages.calls == []
+
+
+class TestScan:
+    """Either: told apart by what is in the file."""
+
+    def test_pdf(self, chart_pdf):
+        client, messages = fake_client()
+        assert scan(chart_pdf, client=client).source == "text"
+        assert messages.calls == []
+
+    def test_image(self, scanned_chart_image):
+        client, messages = fake_client(_song())
+        assert scan(scanned_chart_image, client=client).source == "vision"
+        assert messages.calls[0]["messages"][0]["content"][0]["type"] == "image"
+
+    def test_neither(self):
+        with pytest.raises(ScanError):
+            scan(b"lyrics.txt", client=fake_client()[0])

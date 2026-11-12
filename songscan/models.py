@@ -1,4 +1,4 @@
-"""What a scan finds in a PDF."""
+"""What a scan finds in a PDF or image."""
 
 from dataclasses import dataclass, field
 from typing import Literal
@@ -8,7 +8,7 @@ Kind = Literal["chord_chart", "score", "other"]
 
 @dataclass
 class ScanMeta:
-    """The song's details, as far as the PDF shows them."""
+    """The song's details, as far as its pages show them."""
 
     title: str | None = None
     artists: list[str] = field(default_factory=list)
@@ -31,11 +31,11 @@ class ScanMeta:
 
 @dataclass
 class ScanResult:
-    """A PDF, read.
+    """A PDF or image, read.
 
     A chord chart comes with its ChordPro (details and all), and sheet music
     with its MusicXML; anything else, with neither. `source` says how it was
-    read: from the PDF's own text, or by looking at its pages.
+    read: from a PDF's own text, or by looking at its pages.
     """
 
     kind: Kind
@@ -49,7 +49,7 @@ class ScanResult:
 
 
 class ScanError(Exception):
-    """The PDF couldn't be read. `retryable` when trying again later may work
+    """The PDF or image couldn't be read. `retryable` when trying again later may work
     (the vision service was busy or unreachable)."""
 
     def __init__(self, message: str, *, retryable: bool = False):

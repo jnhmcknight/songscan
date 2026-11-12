@@ -1,7 +1,7 @@
 [project]
 name = "songscan"
-version = "0.2.1"
-description = "Read songs out of PDFs: chord charts as ChordPro, sheet music as MusicXML"
+version = "0.3.0"
+description = "Read songs out of PDFs and images: chord charts as ChordPro, sheet music as MusicXML"
 readme = "README.md"
 license = "MIT"
 authors = [
@@ -12,6 +12,7 @@ dependencies = [
     "anthropic",
     "chordpro-renderer",
     "pdfplumber",
+    "pillow>=11",
     "pydantic>=2",
 ]
 

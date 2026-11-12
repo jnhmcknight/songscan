@@ -1,14 +1,18 @@
 # songscan
 
-Read songs out of PDFs. A chord chart becomes [ChordPro](https://www.chordpro.org/), with the
+Read songs out of PDFs and images (photos and scans). A chord chart becomes [ChordPro](https://www.chordpro.org/), with the
 song's details (title, artists, key, tempo, time, capo, copyright) alongside; sheet music becomes
 MusicXML, which songscan can move to another key and draw (and a lead sheet, with chords and
 lyrics, a ChordPro chart too).
 
 A PDF's own text is read first: charts typed up in a word processor or chart app keep their words
 and where each sits on the page, so their chords can be put back over the syllables they are
-played on, without asking anyone. Anything else (scans, photos, sheet music, or text that isn't
-plainly a chord chart) is read by Claude, looking at its pages.
+played on, without asking anyone. Anything else (scanned PDFs, sheet music, or text that isn't
+plainly a chord chart) is read by Claude, looking at its pages, as images always are.
+
+Images may be any type [Pillow](https://python-pillow.org/) opens. Before Claude sees them they
+are turned upright (as a phone's photo says to), scaled down to what Claude reads, and sent as
+JPEG, PNG, GIF or WebP; a multi-page TIFF, as scanners make, as an image a page.
 
 ## Installation
 
@@ -23,16 +27,16 @@ Reading sheet music needs the `score` extra ([music21](https://www.music21.org/)
 uv add "songscan[score] @ git+https://github.com/jnhmcknight/songscan.git"
 ```
 
-Reading scans needs an [Anthropic API key](https://platform.claude.com/), in `ANTHROPIC_API_KEY`
-or a client you pass in. PDFs with their own text don't use it.
+Reading scans and images needs an [Anthropic API key](https://platform.claude.com/), in
+`ANTHROPIC_API_KEY` or a client you pass in. PDFs with their own text don't use it.
 
 ## Usage
 
 ```python
-from songscan import ScanError, scan_pdf
+from songscan import ScanError, scan
 
 try:
-    result = scan_pdf(pdf_bytes)
+    result = scan(file_bytes)  # a PDF or an image, told apart by what is in it
 except ScanError as error:
     ...  # error.retryable: whether trying again later may work
 
@@ -43,6 +47,8 @@ result.meta       # ScanMeta: title, artists, key, tempo, time, capo, copyright
 result.source     # "text" (the PDF's own) or "vision" (Claude's reading)
 result.warnings   # anything to check, or that couldn't be done
 ```
+
+To say which it is, `scan_pdf(pdf_bytes)` or `scan_image(image_bytes)`.
 
 Sheet music, in another key (by the nearer way up or down, spelled as the key is):
 
@@ -81,7 +87,7 @@ uv run pytest
 uv run ruff check && uv run black --check . && uv run pyright
 ```
 
-Tests that read PDFs with vision use a stand-in for Claude. To run them against the real API
+Tests that read PDFs and images with vision use a stand-in for Claude. To run them against the real API
 instead (which costs a little), set `SONGSCAN_LIVE_API=1` with a key in `ANTHROPIC_API_KEY`:
 
 ```bash

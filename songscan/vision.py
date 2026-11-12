@@ -1,6 +1,6 @@
-"""Reading a PDF by looking at its pages, with Claude: for scans and photos of
-charts, which have no text of their own, and to tell what a PDF is when its
-text isn't plainly a chord chart.
+"""Reading a PDF or images by looking at their pages, with Claude: for scans
+and photos of charts, which have no text of their own, and to tell what a PDF
+is when its text isn't plainly a chord chart.
 """
 
 import base64
@@ -8,9 +8,10 @@ import re
 from typing import Literal
 
 import anthropic
-from anthropic.types.beta import BetaMessageParam, BetaRequestDocumentBlockParam
+from anthropic.types.beta import BetaImageBlockParam, BetaMessageParam, BetaRequestDocumentBlockParam
 from pydantic import BaseModel, Field
 
+from .image import PreparedImage
 from .models import ScanError, ScanMeta, ScanResult
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -19,10 +20,11 @@ DEFAULT_MODEL = "claude-opus-5-5"
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 SYSTEM = """\
-You read PDFs of songs for a church worship team's song library, and turn each into data the library \
-can store. Musicians will play from what you write, so accuracy matters more than completeness.
+You read songs for a church worship team's song library, from a PDF or from images of the pages \
+(photos or scans), and turn each into data the library can store. Musicians will play from what you \
+write, so accuracy matters more than completeness.
 
-First, decide what the PDF is:
+First, decide what the song's pages are:
 - chord_chart: lyrics with chord names (above the words, or inline), or a chart of chords alone.
 - score: sheet music, with notes on staves: lead sheets, piano/vocal, choral or instrumental parts.
 - other: anything else, such as lyrics without chords.
@@ -35,14 +37,14 @@ Use the chord names exactly as written.
 intro, outro, tag, interlude and instrumental.
 - A line of chords with no lyrics stays a line of bracketed chords: "[G] [C] [D]".
 - Instructions to the band, such as "Repeat x2" or "Build", become "{comment: Repeat x2}".
-- Copy what the PDF shows, as it shows it: don't correct, complete, transpose or reorder anything, \
-and write out a section again only where the PDF does.
+- Copy what the pages show, as they show it: don't correct, complete, transpose or reorder anything, \
+and write out a section again only where the pages do.
 - Leave the title, artists, key, tempo, time signature, capo and copyright out of `chordpro`: \
 they have fields of their own.
 For a score or other, `chordpro` is null.
 
-Fill in the song's details only from what the PDF shows, and null (or an empty list) for anything \
-it doesn't: the title, the artists or writers, the key (like "G", "B♭" or "F♯m"), the tempo in beats \
+Fill in the song's details only from what the pages show, and null (or an empty list) for anything \
+they don't: the title, the artists or writers, the key (like "G", "B♭" or "F♯m"), the tempo in beats \
 per minute (digits only), the time signature (like "4/4"), the capo fret (digits only), and the \
 copyright lines, one per line, including any CCLI song number.
 """
@@ -51,7 +53,7 @@ copyright lines, one per line, including any CCLI song number.
 SCORE_SYSTEM = """\
 You transcribe sheet music into MusicXML 4.0 (score-partwise), for a church worship team's song \
 library. Musicians will play from what you write, and it will be moved into other keys, so write \
-exactly what the page shows:
+exactly what the page shows, reading past any skew, shadows or glare in a photo or scan of it:
 
 - Every part and staff, with its clef, key signature and time signature, and their changes.
 - Every note and rest, with its pitch and accidentals as written, duration, ties, dots, tuplets \
@@ -67,7 +69,7 @@ Write the MusicXML only, from <?xml to </score-partwise>, without comments or ex
 
 
 class _Song(BaseModel):
-    """What the model makes of a PDF."""
+    """What the model makes of a song's pages."""
 
     kind: Literal["chord_chart", "score", "other"]
     title: str | None
@@ -80,20 +82,40 @@ class _Song(BaseModel):
     chordpro: str | None = Field(description="The chord chart in ChordPro, without its details.")
 
 
-def read_with_vision(data: bytes, pages: int, client: anthropic.Anthropic, model: str) -> ScanResult:
-    """What Claude makes of the PDF *data* (of *pages* pages)."""
-    document: BetaRequestDocumentBlockParam = {
-        "type": "document",
-        "source": {
-            "type": "base64",
-            "media_type": "application/pdf",
-            "data": base64.b64encode(data).decode(),
-        },
-    }
-    message: BetaMessageParam = {
-        "role": "user",
-        "content": [document, {"type": "text", "text": "Read this PDF."}],
-    }
+# What Claude is sent of a song: a PDF, or an image of each page
+Content = list[BetaRequestDocumentBlockParam | BetaImageBlockParam]
+
+
+def pdf_content(data: bytes) -> Content:
+    return [
+        {
+            "type": "document",
+            "source": {"type": "base64", "media_type": "application/pdf", "data": _base64(data)},
+        }
+    ]
+
+
+def image_content(images: list[PreparedImage]) -> Content:
+    return [
+        {
+            "type": "image",
+            "source": {"type": "base64", "media_type": image.media_type, "data": _base64(image.data)},
+        }
+        for image in images
+    ]
+
+
+def _base64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
+
+
+def read_with_vision(content: Content, pages: int, client: anthropic.Anthropic, model: str) -> ScanResult:
+    """What Claude makes of the song in *content* (of *pages* pages): a PDF,
+    or images of its pages."""
+    is_pdf = content[0]["type"] == "document"
+    what = "PDF" if is_pdf else "image"
+    ask = "Read this PDF." if is_pdf else "Read the song in these images."
+    message: BetaMessageParam = {"role": "user", "content": [*content, {"type": "text", "text": ask}]}
     try:
         response = client.beta.messages.parse(
             model=model,
@@ -106,17 +128,17 @@ def read_with_vision(data: bytes, pages: int, client: anthropic.Anthropic, model
             betas=[_FALLBACK_BETA],
         )
     except (anthropic.RateLimitError, anthropic.InternalServerError, anthropic.APIConnectionError) as error:
-        raise ScanError(f"The PDF couldn't be read just now: {error}", retryable=True) from error
+        raise ScanError(f"The {what} couldn't be read just now: {error}", retryable=True) from error
     except anthropic.APIStatusError as error:
-        raise ScanError(f"The PDF couldn't be read: {error.message}") from error
+        raise ScanError(f"The {what} couldn't be read: {error.message}") from error
 
     if response.stop_reason == "refusal":
-        raise ScanError("The PDF couldn't be read: reading it was declined.")
+        raise ScanError(f"The {what} couldn't be read: reading it was declined.")
     if response.stop_reason == "max_tokens":
-        raise ScanError("The PDF couldn't be read: it is too long.")
+        raise ScanError(f"The {what} couldn't be read: it is too long.")
     song = response.parsed_output
     if song is None:
-        raise ScanError("The PDF couldn't be read: no song came back.")
+        raise ScanError(f"The {what} couldn't be read: no song came back.")
 
     meta = ScanMeta(
         title=song.title,
@@ -133,15 +155,13 @@ def read_with_vision(data: bytes, pages: int, client: anthropic.Anthropic, model
     elif song.kind == "chord_chart":
         result.warnings.append("No chords or lyrics could be read from this chart.")
     elif song.kind == "score":
-        _read_score(result, document, client, model)
+        _read_score(result, content, client, model)
     return result
 
 
-def _read_score(
-    result: ScanResult, document: BetaRequestDocumentBlockParam, client: anthropic.Anthropic, model: str
-) -> None:
+def _read_score(result: ScanResult, content: Content, client: anthropic.Anthropic, model: str) -> None:
     """Fill in *result*, sheet music, with its MusicXML (and, from that, the
-    details the PDF left out, and a lead sheet's chord chart); or a warning
+    details its pages left out, and a lead sheet's chord chart); or a warning
     saying why it couldn't be."""
     try:
         from . import score  # music21 and verovio: the "score" extra
@@ -149,7 +169,7 @@ def _read_score(
         result.warnings.append('Reading sheet music needs songscan\'s "score" extra.')
         return
     try:
-        musicxml = read_musicxml(document, client, model)
+        musicxml = read_musicxml(content, client, model)
     except ScanError as error:
         if error.retryable:
             raise
@@ -169,13 +189,13 @@ def _read_score(
         result.chordpro = "\n".join([*meta.directives(), "", chart])
 
 
-def read_musicxml(document: BetaRequestDocumentBlockParam, client: anthropic.Anthropic, model: str) -> str:
-    """The MusicXML of the sheet music in *document* (a PDF of it), tidied
-    up. Claude writes it again, once, if what it wrote can't be read."""
+def read_musicxml(content: Content, client: anthropic.Anthropic, model: str) -> str:
+    """The MusicXML of the sheet music in *content* (a PDF of it, or images
+    of its pages), tidied up. Claude writes it again, once, if what it wrote can't be read."""
     from . import score
 
     messages: list[BetaMessageParam] = [
-        {"role": "user", "content": [document, {"type": "text", "text": "Transcribe this sheet music."}]}
+        {"role": "user", "content": [*content, {"type": "text", "text": "Transcribe this sheet music."}]}
     ]
     for attempt in range(2):
         response = _stream(messages, client, model)

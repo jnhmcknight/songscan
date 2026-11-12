@@ -1721,12 +1721,13 @@ wheels = [
 
 [[package]]
 name = "songscan"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "chordpro-renderer" },
     { name = "pdfplumber" },
+    { name = "pillow" },
     { name = "pydantic" },
 ]
 
@@ -1756,6 +1757,7 @@ requires-dist = [
     { name = "chordpro-renderer", git = "https://github.com/jnhmcknight/chordpro.git?rev=main" },
     { name = "music21", marker = "extra == 'score'", specifier = ">=10.5.2" },
     { name = "pdfplumber" },
+    { name = "pillow", specifier = ">=11" },
     { name = "pydantic", specifier = ">=2" },
     { name = "svglib", marker = "extra == 'score'", specifier = ">=2.3.2" },
     { name = "verovio", marker = "extra == 'score'", specifier = ">=6.4.0" },

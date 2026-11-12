@@ -1,6 +1,6 @@
-"""PDFs to scan, made as the tests run, and a stand-in for Claude.
+"""PDFs and images to scan, made as the tests run, and a stand-in for Claude.
 
-Tests that read PDFs with vision ask Claude itself when SONGSCAN_LIVE_API=1
+Tests that read PDFs or images with vision ask Claude itself when SONGSCAN_LIVE_API=1
 (with an API key in ANTHROPIC_API_KEY), and a stand-in otherwise: see the
 `vision` fixture. Tests of how songscan handles the API's answers and errors
 always use the stand-in.
@@ -88,6 +88,23 @@ def make_image_pdf() -> bytes:
 def make_scanned_pdf(lines: list[str]) -> bytes:
     """A PDF of a picture of *lines*, laid out as `make_pdf` lays them out
     but with no text of its own: as a scanner makes of a printed chart."""
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=letter)
+    pdf.drawImage(ImageReader(chart_image(lines)), 0, 0, *letter)
+    pdf.save()
+    return buf.getvalue()
+
+
+def make_image(lines: list[str], fmt: str = "PNG", **options) -> bytes:
+    """A picture of *lines* (as `chart_image`), as a file of *fmt*: as a
+    phone or scanner makes of a printed chart."""
+    buf = io.BytesIO()
+    chart_image(lines).save(buf, fmt, **options)
+    return buf.getvalue()
+
+
+def chart_image(lines: list[str]) -> Image.Image:
+    """A page with *lines* on it, laid out as `make_pdf` lays them out."""
     image = Image.new("L", (1700, 2200), 255)
     draw = ImageDraw.Draw(image)
     font = ImageFont.load_default(size=36)
@@ -104,11 +121,7 @@ def make_scanned_pdf(lines: list[str]) -> bytes:
         else:
             draw.text((150, y), line, font=font, fill=0)
         y += 50
-    buf = io.BytesIO()
-    pdf = canvas.Canvas(buf, pagesize=letter)
-    pdf.drawImage(ImageReader(image), 0, 0, *letter)
-    pdf.save()
-    return buf.getvalue()
+    return image
 
 
 @pytest.fixture
@@ -124,6 +137,11 @@ def image_pdf() -> bytes:
 @pytest.fixture
 def scanned_chart_pdf() -> bytes:
     return make_scanned_pdf(CHART)
+
+
+@pytest.fixture
+def scanned_chart_image() -> bytes:
+    return make_image(CHART)
 
 
 LIVE = os.environ.get("SONGSCAN_LIVE_API") == "1"
