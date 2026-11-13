@@ -1,11 +1,13 @@
 """Scanning: a PDF's own text when it is a chord chart, Claude otherwise (and
 for images, always)."""
 
+import json
+
 import httpx2
 import pytest
 
 import anthropic
-from songscan import DEFAULT_MODEL, ScanError, scan, scan_image, scan_pdf
+from songscan import DEFAULT_MODEL, ScanError, complete_score, scan, scan_image, scan_pdf, transcribe_score
 from songscan.vision import _Song
 from songscan import score
 from tests.conftest import CHART, LEAD_SHEET, fake_client, make_image, make_pdf
@@ -189,6 +191,68 @@ class TestSheetMusic:
         with pytest.raises(ScanError) as raised:
             scan_pdf(image_pdf, client=client)
         assert raised.value.retryable
+
+
+class TestInSteps:
+    """Sheet music read in steps (transcribe=False, transcribe_score, complete_score),
+    each of which could be run in a process of its own."""
+
+    def _steps(self, data, **kwargs):
+        client, messages = fake_client(_song(kind="score", key=None, time=None, chordpro=None), **kwargs)
+        result = scan(data, client=client, transcribe=False)
+        return result, client, messages
+
+    def test_stops_before_transcribing(self, image_pdf):
+        result, _, messages = self._steps(image_pdf, scores=[LEAD_SHEET])
+        assert (result.kind, result.musicxml, result.transcribe_pending) == ("score", None, True)
+        assert messages.streams == []
+
+    def test_same_as_in_one_go(self):
+        pdf = score.render(LEAD_SHEET, format="pdf")
+        result, client, _ = self._steps(pdf, scores=[LEAD_SHEET])
+        attempt = transcribe_score(pdf, client=client)
+        assert attempt.retry is None
+        complete_score(result, attempt.musicxml)
+
+        whole, _ = fake_client(_song(kind="score", key=None, time=None, chordpro=None), scores=[LEAD_SHEET])
+        assert result == scan_pdf(pdf, client=whole)
+        assert not result.transcribe_pending
+
+    def test_image(self, scanned_chart_image):
+        client, messages = fake_client(scores=[LEAD_SHEET])
+        attempt = transcribe_score(scanned_chart_image, client=client)
+        assert attempt.musicxml is not None
+        assert messages.streams[0]["messages"][0]["content"][0]["type"] == "image"
+
+    def test_retry(self, image_pdf):
+        _, client, messages = self._steps(image_pdf, scores=["<score-partwise>oops", LEAD_SHEET])
+        first = transcribe_score(image_pdf, client=client)
+        assert first.musicxml is None
+        # Kept between processes as JSON
+        retry = json.loads(json.dumps(first.retry))
+        second = transcribe_score(image_pdf, client=client, retry=retry)
+        assert second.musicxml is not None
+        sent = messages.streams[1]["messages"]
+        assert [m["role"] for m in sent] == ["user", "assistant", "user"]
+        assert sent[1]["content"] == [{"type": "text", "text": "<score-partwise>oops"}]
+        assert "couldn't be read" in sent[2]["content"]
+
+    def test_unreadable_twice(self, image_pdf):
+        _, client, _ = self._steps(image_pdf, scores=["nope", "still nope"])
+        first = transcribe_score(image_pdf, client=client)
+        with pytest.raises(ScanError) as raised:
+            transcribe_score(image_pdf, client=client, retry=first.retry)
+        assert not raised.value.retryable
+
+    def test_busy(self, image_pdf):
+        client, _ = fake_client(score_error=_status_error(anthropic.RateLimitError, 429))
+        with pytest.raises(ScanError) as raised:
+            transcribe_score(image_pdf, client=client)
+        assert raised.value.retryable
+
+    def test_neither(self):
+        with pytest.raises(ScanError):
+            transcribe_score(b"not a song", client=fake_client()[0])
 
 
 class TestImages:

@@ -12,7 +12,7 @@ from anthropic.types.beta import BetaImageBlockParam, BetaMessageParam, BetaRequ
 from pydantic import BaseModel, Field
 
 from .image import PreparedImage
-from .models import ScanError, ScanMeta, ScanResult
+from .models import ScanError, ScanMeta, ScanResult, Transcription
 
 DEFAULT_MODEL = "claude-opus-5-5"
 
@@ -109,9 +109,12 @@ def _base64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
 
-def read_with_vision(content: Content, pages: int, client: anthropic.Anthropic, model: str) -> ScanResult:
+def read_with_vision(
+    content: Content, pages: int, client: anthropic.Anthropic, model: str, transcribe: bool = True
+) -> ScanResult:
     """What Claude makes of the song in *content* (of *pages* pages): a PDF,
-    or images of its pages."""
+    or images of its pages. Sheet music is written out as MusicXML too, unless
+    not *transcribe*: then it comes back `transcribe_pending`."""
     is_pdf = content[0]["type"] == "document"
     what = "PDF" if is_pdf else "image"
     ask = "Read this PDF." if is_pdf else "Read the song in these images."
@@ -154,9 +157,25 @@ def read_with_vision(content: Content, pages: int, client: anthropic.Anthropic, 
         result.chordpro = "\n".join([*meta.directives(), "", song.chordpro.strip()])
     elif song.kind == "chord_chart":
         result.warnings.append("No chords or lyrics could be read from this chart.")
-    elif song.kind == "score":
-        _read_score(result, content, client, model)
+    elif song.kind == "score" and _has_score_extra(result):
+        if transcribe:
+            _read_score(result, content, client, model)
+        else:
+            result.transcribe_pending = True
     return result
+
+
+def _has_score_extra(result: ScanResult) -> bool:
+    """Whether sheet music can be read here (the "score" extra); if not, *result* says so."""
+    try:
+        from . import score  # noqa: F401  (music21 and verovio)
+    except ImportError:
+        result.warnings.append(_NO_SCORE_EXTRA)
+        return False
+    return True
+
+
+_NO_SCORE_EXTRA = 'Reading sheet music needs songscan\'s "score" extra.'
 
 
 def _read_score(result: ScanResult, content: Content, client: anthropic.Anthropic, model: str) -> None:
@@ -164,17 +183,20 @@ def _read_score(result: ScanResult, content: Content, client: anthropic.Anthropi
     details its pages left out, and a lead sheet's chord chart); or a warning
     saying why it couldn't be."""
     try:
-        from . import score  # music21 and verovio: the "score" extra
-    except ImportError:
-        result.warnings.append('Reading sheet music needs songscan\'s "score" extra.')
-        return
-    try:
         musicxml = read_musicxml(content, client, model)
     except ScanError as error:
         if error.retryable:
             raise
         result.warnings.append(f"The sheet music couldn't be read: {error}")
         return
+    complete_score(result, musicxml)
+
+
+def complete_score(result: ScanResult, musicxml: str) -> ScanResult:
+    """*result*, sheet music, with *musicxml* (as transcribe_score wrote it)
+    as its MusicXML, and, from that, the details its pages left out and a
+    lead sheet's chord chart."""
+    from . import score
 
     parsed = score.load(musicxml)
     result.musicxml = musicxml
@@ -187,39 +209,57 @@ def _read_score(result: ScanResult, content: Content, client: anthropic.Anthropi
     meta.copyright = meta.copyright or found.copyright
     if chart := score.score_chordpro(parsed):
         result.chordpro = "\n".join([*meta.directives(), "", chart])
+    result.transcribe_pending = False
+    return result
 
 
 def read_musicxml(content: Content, client: anthropic.Anthropic, model: str) -> str:
     """The MusicXML of the sheet music in *content* (a PDF of it, or images
     of its pages), tidied up. Claude writes it again, once, if what it wrote can't be read."""
-    from . import score
+    attempt = transcribe_content(content, client, model)
+    if attempt.musicxml is None:
+        attempt = transcribe_content(content, client, model, retry=attempt.retry)
+    assert attempt.musicxml is not None  # the second attempt raises instead
+    return attempt.musicxml
+
+
+def transcribe_content(
+    content: Content, client: anthropic.Anthropic, model: str, retry: dict | None = None
+) -> Transcription:
+    """One attempt at the MusicXML of the sheet music in *content*: tidied up,
+    or, if what Claude wrote can't be read, `retry`, for a second attempt
+    (given *retry*, a second attempt: Claude is told what was wrong and writes
+    it again, and what it writes then must be read). Raises ScanError when
+    it couldn't be written, or a second attempt couldn't be read."""
+    try:
+        from . import score  # music21 and verovio: the "score" extra
+    except ImportError:
+        raise ScanError(_NO_SCORE_EXTRA) from None
 
     messages: list[BetaMessageParam] = [
         {"role": "user", "content": [*content, {"type": "text", "text": "Transcribe this sheet music."}]}
     ]
-    for attempt in range(2):
-        response = _stream(messages, client, model)
-        text = "".join(block.text for block in response.content if block.type == "text")
-        found = _MUSICXML_RE.search(text)
-        try:
-            if found is None:
-                raise ScanError("No MusicXML came back.")
-            return score.clean(found.group(0))
-        except ScanError as error:
-            if attempt:
-                raise
-            messages += [
-                {
-                    "role": "assistant",
-                    "content": [block.model_dump(exclude_none=True) for block in response.content],
-                },
-                {
-                    "role": "user",
-                    "content": f"That MusicXML couldn't be read ({error}). Write the whole score again, "
-                    "as complete, valid MusicXML.",
-                },
-            ]
-    raise AssertionError("unreachable")
+    if retry is not None:
+        messages += [
+            {"role": "assistant", "content": retry["content"]},
+            {
+                "role": "user",
+                "content": f"That MusicXML couldn't be read ({retry['error']}). Write the whole score again, "
+                "as complete, valid MusicXML.",
+            },
+        ]
+    response = _stream(messages, client, model)
+    text = "".join(block.text for block in response.content if block.type == "text")
+    found = _MUSICXML_RE.search(text)
+    try:
+        if found is None:
+            raise ScanError("No MusicXML came back.")
+        return Transcription(musicxml=score.clean(found.group(0)))
+    except ScanError as error:
+        if retry is not None:
+            raise
+        written = [block.model_dump(mode="json", exclude_none=True) for block in response.content]
+        return Transcription(retry={"content": written, "error": str(error)})
 
 
 _MUSICXML_RE = re.compile(

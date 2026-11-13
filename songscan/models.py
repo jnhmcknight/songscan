@@ -46,6 +46,19 @@ class ScanResult:
     musicxml: str | None = None
     # Things the reader should check, or that couldn't be done
     warnings: list[str] = field(default_factory=list)
+    # Sheet music read without transcribing it (transcribe=False): its MusicXML
+    # is still to be written, with transcribe_score and complete_score
+    transcribe_pending: bool = False
+
+
+@dataclass
+class Transcription:
+    """One attempt at writing sheet music out (transcribe_score): its MusicXML,
+    or, when what Claude wrote couldn't be read, `retry`, to pass to the next
+    attempt (JSON, to keep between processes)."""
+
+    musicxml: str | None = None
+    retry: dict | None = None
 
 
 class ScanError(Exception):

@@ -1,6 +1,6 @@
 [project]
 name = "songscan"
-version = "0.3.0"
+version = "0.4.0"
 description = "Read songs out of PDFs and images: chord charts as ChordPro, sheet music as MusicXML"
 readme = "README.md"
 license = "MIT"

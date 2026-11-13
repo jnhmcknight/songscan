@@ -14,8 +14,19 @@ Usage::
         save(result.chordpro, key=result.meta.key)
 """
 
-from .models import ScanError, ScanMeta, ScanResult
-from .scan import scan, scan_image, scan_pdf
-from .vision import DEFAULT_MODEL
+from .models import ScanError, ScanMeta, ScanResult, Transcription
+from .scan import scan, scan_image, scan_pdf, transcribe_score
+from .vision import DEFAULT_MODEL, complete_score
 
-__all__ = ["DEFAULT_MODEL", "ScanError", "ScanMeta", "ScanResult", "scan", "scan_image", "scan_pdf"]
+__all__ = [
+    "DEFAULT_MODEL",
+    "ScanError",
+    "ScanMeta",
+    "ScanResult",
+    "Transcription",
+    "complete_score",
+    "scan",
+    "scan_image",
+    "scan_pdf",
+    "transcribe_score",
+]

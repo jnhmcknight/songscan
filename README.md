@@ -50,6 +50,22 @@ result.warnings   # anything to check, or that couldn't be done
 
 To say which it is, `scan_pdf(pdf_bytes)` or `scan_image(image_bytes)`.
 
+Writing sheet music out can take many minutes (Claude may write it twice, when
+what it wrote first can't be read). Where a process may only run so long, read it
+in steps, each of which can run in a process of its own:
+
+```python
+from songscan import complete_score, scan, transcribe_score
+
+result = scan(file_bytes, transcribe=False)  # sheet music comes back transcribe_pending
+if result.transcribe_pending:
+    attempt = transcribe_score(file_bytes)  # one attempt
+    if attempt.musicxml is None:
+        # attempt.retry is JSON, to keep until the next step
+        attempt = transcribe_score(file_bytes, retry=attempt.retry)  # MusicXML, or ScanError
+    complete_score(result, attempt.musicxml)  # the details and chart it gives
+```
+
 Sheet music, in another key (by the nearer way up or down, spelled as the key is):
 
 ```python
